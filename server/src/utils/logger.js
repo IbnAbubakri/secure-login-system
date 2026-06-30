@@ -26,7 +26,7 @@ const logger = pino(
   {
     level: env.isDev() ? 'debug' : 'info',
     redact: {
-      paths: ['req.headers.cookie', 'req.headers.authorization', 'body.password', 'body.token'],
+      paths: ['req.headers.cookie', 'req.headers.authorization', 'body.password', 'body.token', 'body.resetToken', 'body.emailVerificationToken', 'body.code', 'body.totpCode'],
       censor: '[REDACTED]',
     },
   },

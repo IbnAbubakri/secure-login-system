@@ -26,7 +26,7 @@ export default function LoginPage() {
   const [mfaStep, setMfaStep] = useState(false)
   const [totpCode, setTotpCode] = useState('')
   const [mfaEmail, setMfaEmail] = useState('')
-  const [csrfToken, setCsrfToken] = useState('')
+  const [csrfToken, setCsrfToken] = useState(null)
 
   const emailError = email ? validateEmail(email) : ''
   const passwordError = password ? validatePassword(password) : ''
@@ -35,7 +35,7 @@ export default function LoginPage() {
   const abortRef = useRef(null)
   const totpRef = useRef(null)
 
-  const isFormValid = !validateEmail(email) && !validatePassword(password)
+  const isFormValid = csrfToken && !validateEmail(email) && !validatePassword(password)
 
   useEffect(() => {
     try {
@@ -232,7 +232,6 @@ export default function LoginPage() {
           </div>
 
             <form onSubmit={handleSubmit} noValidate>
-            <input type="hidden" name="_csrf" value={csrfToken} readOnly />
             <div className="field">
               <label htmlFor="email" className="label">Email address</label>
               <input

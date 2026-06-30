@@ -1,9 +1,8 @@
 import AppError from '../utils/AppError.js';
+import { getPasswordPolicy, validatePasswordComplexity } from '../services/auth.service.js';
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const MIN_PASSWORD = 12;
 const MAX_EMAIL_LENGTH = 254;
-const MAX_PASSWORD_LENGTH = 128;
 
 function sanitize(val) {
   if (typeof val !== 'string') return '';
@@ -11,14 +10,15 @@ function sanitize(val) {
 }
 
 function commonValidation(email, password) {
+  const policy = getPasswordPolicy();
   const errors = [];
   if (!email || typeof email !== 'string') errors.push('Email is required.');
   else if (email.length > MAX_EMAIL_LENGTH) errors.push('Email is too long.');
   else if (!EMAIL_REGEX.test(sanitize(email))) errors.push('Invalid email format.');
   if (password !== undefined) {
     if (!password || typeof password !== 'string') errors.push('Password is required.');
-    else if (password.length > MAX_PASSWORD_LENGTH) errors.push('Password is too long.');
-    else if (password.length < MIN_PASSWORD) errors.push(`Password must be at least ${MIN_PASSWORD} characters.`);
+    else if (password.length > policy.maxLength) errors.push('Password is too long.');
+    else errors.push(...validatePasswordComplexity(password));
   }
   return errors;
 }
@@ -45,8 +45,7 @@ export function validatePasswordReset(req, res, next) {
   const errors = [];
   if (!token || typeof token !== 'string') errors.push('Reset token is required.');
   if (!password || typeof password !== 'string') errors.push('Password is required.');
-  else if (password.length > MAX_PASSWORD_LENGTH) errors.push('Password is too long.');
-  else if (password.length < MIN_PASSWORD) errors.push(`Password must be at least ${MIN_PASSWORD} characters.`);
+  else errors.push(...validatePasswordComplexity(password));
   if (errors.length) return next(new AppError(errors.join(' '), 400));
   next();
 }

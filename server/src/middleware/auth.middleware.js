@@ -2,6 +2,7 @@ import { verifyAccessToken } from '../services/token.service.js';
 import { getUserById } from '../services/auth.service.js';
 import { checkSessionActivity, updateSessionActivity, getSessionById } from '../services/token.service.js';
 import AppError from '../utils/AppError.js';
+import logger from '../utils/logger.js';
 
 const IDLE_TIMEOUT_MINUTES = 30;
 const ABSOLUTE_LIFETIME_HOURS = 24;
@@ -15,13 +16,17 @@ export function authenticate(req, res, next) {
     const user = getUserById(decoded.sub);
     if (!user) return next(new AppError('User not found.', 401));
 
-    const sessionId = req.cookies?.sessionId;
+    const sessionId = decoded.sessionId;
     if (sessionId) {
       if (!checkSessionActivity(sessionId, IDLE_TIMEOUT_MINUTES)) {
         return next(new AppError('Session expired due to inactivity.', 401));
       }
       const session = getSessionById(sessionId);
       if (session) {
+        if (session.userId !== decoded.sub) {
+          logger.warn({ userId: decoded.sub, sessionUserId: session.userId }, 'Session user mismatch');
+          return next(new AppError('Session invalid.', 401));
+        }
         const ageHours = (Date.now() - new Date(session.createdAt).getTime()) / 3600000;
         if (ageHours > ABSOLUTE_LIFETIME_HOURS) {
           return next(new AppError('Session lifetime exceeded. Please sign in again.', 401));

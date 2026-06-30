@@ -1,4 +1,5 @@
 import { config } from 'dotenv';
+import randomToken from '../utils/randomToken.js';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -17,12 +18,10 @@ const env = {
   isProd: () => env.NODE_ENV === 'production',
 };
 
-const required = ['JWT_SECRET'];
-for (const key of required) {
-  if (!env[key]) {
-    console.error(`Missing required environment variable: ${key}`);
-    process.exit(1);
-  }
+const DEFAULT_SECRET = 'change-this-to-a-long-random-string-in-production';
+if (!env.JWT_SECRET || env.JWT_SECRET === DEFAULT_SECRET) {
+  env.JWT_SECRET = randomToken(32);
+  console.warn('WARNING: JWT_SECRET is weak or default. Auto-generated a random secret for this session.');
 }
 
 export default env;

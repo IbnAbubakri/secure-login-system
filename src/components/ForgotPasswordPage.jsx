@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -6,7 +6,7 @@ export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [alert, setAlert] = useState(null)
-  const [csrfToken, setCsrfToken] = useState('')
+  const [csrfToken, setCsrfToken] = useState(null)
 
   const emailValid = EMAIL_REGEX.test(email)
 
@@ -21,6 +21,7 @@ export default function ForgotPasswordPage() {
     e.preventDefault()
     setAlert(null)
 
+    if (!csrfToken) return
     if (!email.trim() || !emailValid) {
       setAlert({ type: 'error', message: 'Enter a valid email address.' })
       return

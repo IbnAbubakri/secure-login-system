@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: vault
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm run start --prefix server
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGIN
+        value: https://vault.onrender.com

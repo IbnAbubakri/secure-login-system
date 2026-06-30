@@ -2,7 +2,6 @@ import { useState, useRef, useCallback } from 'react'
 import zxcvbn from 'zxcvbn'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const MIN_PASSWORD_LENGTH = 12
 const TIMEOUT_MS = 10000
 
 function validateEmail(value) {
@@ -11,9 +10,16 @@ function validateEmail(value) {
   return ''
 }
 
-function validatePassword(value) {
+function validatePassword(value, policy) {
   if (!value) return 'Password is required.'
-  if (value.length < MIN_PASSWORD_LENGTH) return `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`
+  if (value.length < policy.minLength) return `Password must be at least ${policy.minLength} characters.`
+  if (value.length > policy.maxLength) return `Password must not exceed ${policy.maxLength} characters.`
+  const rules = []
+  if ((value.match(/[A-Z]/g) || []).length < policy.minUppercase) rules.push(`${policy.minUppercase} uppercase`)
+  if ((value.match(/[a-z]/g) || []).length < policy.minLowercase) rules.push(`${policy.minLowercase} lowercase`)
+  if ((value.match(/[0-9]/g) || []).length < policy.minNumbers) rules.push(`${policy.minNumbers} number`)
+  if ((value.match(/[^A-Za-z0-9]/g) || []).length < policy.minSpecialChars) rules.push(`${policy.minSpecialChars} special character`)
+  if (rules.length) return `Must include at least ${rules.join(', ')}.`
   return ''
 }
 
@@ -24,7 +30,8 @@ export default function RegisterPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [alert, setAlert] = useState(null)
-  const [csrfToken, setCsrfToken] = useState('')
+  const [csrfToken, setCsrfToken] = useState(null)
+  const [policy, setPolicy] = useState(null)
   const abortRef = useRef(null)
 
   useEffect(() => {
@@ -32,16 +39,20 @@ export default function RegisterPage() {
       .then((r) => r.json())
       .then((d) => setCsrfToken(d.csrfToken))
       .catch(() => {})
+    fetch('/api/auth/password-policy', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((p) => setPolicy(p))
+      .catch(() => {})
   }, [])
 
   const emailError = email ? validateEmail(email) : ''
-  const passwordError = password ? validatePassword(password) : ''
+  const passwordError = password && policy ? validatePassword(password, policy) : ''
   const confirmError = confirmPassword && password !== confirmPassword ? 'Passwords do not match.' : ''
   const emailTouched = useRef(false)
   const passwordTouched = useRef(false)
   const confirmTouched = useRef(false)
 
-  const formValid = !emailError && !passwordError && !confirmError && email && password && confirmPassword
+  const formValid = csrfToken && policy && !emailError && !passwordError && !confirmError && email && password && confirmPassword
 
   const strength = password ? zxcvbn(password) : null
   const strengthScore = strength ? strength.score : 0
@@ -84,7 +95,7 @@ export default function RegisterPage() {
       abortRef.current = null
       setAlert({ type: 'error', message: err.name === 'AbortError' ? 'Request timed out.' : 'Network error.' })
     }
-  }, [email, password, formValid])
+  }, [email, password, formValid, csrfToken])
 
   return (
     <>
@@ -135,7 +146,7 @@ export default function RegisterPage() {
                   type={showPassword ? 'text' : 'password'}
                   id="reg-password" className="input"
                   autoComplete="new-password" required
-                  minLength={MIN_PASSWORD_LENGTH}
+                  minLength={policy?.minLength || 12}
                   aria-describedby="reg-password-error"
                   aria-invalid={passwordTouched.current && passwordError ? 'true' : 'false'}
                   placeholder={'\u2022'.repeat(12)}

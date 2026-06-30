@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
 import zxcvbn from 'zxcvbn'
 
-const MIN_PASSWORD_LENGTH = 12
 const TIMEOUT_MS = 10000
 
 export default function ResetPasswordPage() {
@@ -10,7 +9,8 @@ export default function ResetPasswordPage() {
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [alert, setAlert] = useState(null)
-  const [csrfToken, setCsrfToken] = useState('')
+  const [csrfToken, setCsrfToken] = useState(null)
+  const [policy, setPolicy] = useState(null)
   const abortRef = useRef(null)
 
   useEffect(() => {
@@ -18,19 +18,35 @@ export default function ResetPasswordPage() {
       .then((r) => r.json())
       .then((d) => setCsrfToken(d.csrfToken))
       .catch(() => {})
+    fetch('/api/auth/password-policy', { credentials: 'include' })
+      .then((r) => r.json())
+      .then((p) => setPolicy(p))
+      .catch(() => {})
   }, [])
+
+  function validatePassword(value) {
+    if (!value) return 'Password is required.'
+    if (!policy) return ''
+    if (value.length < policy.minLength) return `Password must be at least ${policy.minLength} characters.`
+    if (value.length > policy.maxLength) return `Password must not exceed ${policy.maxLength} characters.`
+    const rules = []
+    if ((value.match(/[A-Z]/g) || []).length < policy.minUppercase) rules.push(`${policy.minUppercase} uppercase`)
+    if ((value.match(/[a-z]/g) || []).length < policy.minLowercase) rules.push(`${policy.minLowercase} lowercase`)
+    if ((value.match(/[0-9]/g) || []).length < policy.minNumbers) rules.push(`${policy.minNumbers} number`)
+    if ((value.match(/[^A-Za-z0-9]/g) || []).length < policy.minSpecialChars) rules.push(`${policy.minSpecialChars} special character`)
+    if (rules.length) return `Must include at least ${rules.join(', ')}.`
+    return ''
+  }
 
   const params = new URLSearchParams(window.location.search)
   const token = params.get('token')
 
-  const passwordError = password && password.length < MIN_PASSWORD_LENGTH
-    ? `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`
-    : ''
+  const passwordError = password ? validatePassword(password) : ''
   const confirmError = confirmPassword && password !== confirmPassword ? 'Passwords do not match.' : ''
   const passwordTouched = useRef(false)
   const confirmTouched = useRef(false)
 
-  const formValid = !passwordError && !confirmError && password && confirmPassword
+  const formValid = csrfToken && !passwordError && !confirmError && password && confirmPassword
 
   const strength = password ? zxcvbn(password) : null
   const strengthScore = strength ? strength.score : 0
@@ -73,7 +89,7 @@ export default function ResetPasswordPage() {
       abortRef.current = null
       setAlert({ type: 'error', message: err.name === 'AbortError' ? 'Request timed out.' : 'Network error.' })
     }
-  }, [password, token, formValid])
+  }, [password, token, formValid, csrfToken])
 
   if (!token) {
     return (
@@ -124,7 +140,7 @@ export default function ResetPasswordPage() {
                   type={showPassword ? 'text' : 'password'}
                   id="reset-password" className="input"
                   autoComplete="new-password" required
-                  minLength={MIN_PASSWORD_LENGTH}
+                  minLength={policy?.minLength || 12}
                   aria-describedby="reset-password-error"
                   aria-invalid={passwordTouched.current && passwordError ? 'true' : 'false'}
                   placeholder={'\u2022'.repeat(12)}

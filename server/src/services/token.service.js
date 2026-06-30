@@ -1,22 +1,13 @@
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
-import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import env from '../config/env.js';
+import { loadJSON, saveJSON } from '../utils/fileStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REFRESH_PATH = resolve(__dirname, '../../data/refresh-tokens.json');
 const SESSIONS_PATH = resolve(__dirname, '../../data/sessions.json');
-
-function loadJSON(path, fallback) {
-  if (!existsSync(path)) return fallback;
-  try { return JSON.parse(readFileSync(path, 'utf-8')); }
-  catch { return fallback; }
-}
-function saveJSON(path, data) {
-  writeFileSync(path, JSON.stringify(data, null, 2), 'utf-8');
-}
 
 function loadRT() { return loadJSON(REFRESH_PATH, []); }
 function saveRT(t) { saveJSON(REFRESH_PATH, t); }
@@ -42,8 +33,13 @@ export function verifyAccessToken(token) {
 
 export function rotateRefreshToken(oldToken, userId) {
   const tokens = loadRT();
-  saveRT(tokens.filter((t) => t.token !== oldToken));
-  return generateRefreshToken(userId);
+  const filtered = tokens.filter((t) => t.token !== oldToken);
+  if (filtered.length === tokens.length) return null;
+  const newToken = uuidv4();
+  const expiresAt = new Date(Date.now() + parseDuration(env.JWT_REFRESH_EXPIRES_IN)).toISOString();
+  filtered.push({ token: newToken, userId, expiresAt });
+  saveRT(filtered);
+  return newToken;
 }
 
 export function revokeRefreshToken(token) {

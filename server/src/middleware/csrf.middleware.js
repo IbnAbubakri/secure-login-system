@@ -1,15 +1,16 @@
-import crypto from 'crypto';
+import randomToken from '../utils/randomToken.js';
 
 const COOKIE_NAME = 'csrf-token';
 const HEADER_NAME = 'x-csrf-token';
+const CSRF_TOKEN_LENGTH = 32;
 
 export function csrfToken(req, res) {
   let token = req.cookies?.[COOKIE_NAME];
-  if (!token || token.length < 32) {
-    token = crypto.randomBytes(32).toString('hex');
+  if (!token || token.length < CSRF_TOKEN_LENGTH) {
+    token = randomToken(CSRF_TOKEN_LENGTH);
   }
   res.cookie(COOKIE_NAME, token, {
-    httpOnly: false,
+    httpOnly: true,
     sameSite: 'strict',
     secure: process.env.NODE_ENV === 'production',
     path: '/',

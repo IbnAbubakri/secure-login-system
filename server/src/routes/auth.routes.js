@@ -14,7 +14,7 @@ import { csrfToken, validateCsrf } from '../middleware/csrf.middleware.js';
 const router = Router();
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, max: 5,
+  windowMs: 15 * 60 * 1000, max: 20,
   standardHeaders: true, legacyHeaders: false,
   message: { error: 'Too many attempts. Please wait before trying again.' },
 });
@@ -22,7 +22,27 @@ const loginLimiter = rateLimit({
 const forgotLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 3,
   standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => req.body?.email || req.ip,
   message: { error: 'Too many requests. Please wait before trying again.' },
+});
+
+const resetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  keyGenerator: (req) => req.body?.token || req.ip,
+  message: { error: 'Too many reset attempts. Please wait before trying again.' },
+});
+
+const mfaGenerateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many MFA requests. Please wait before trying again.' },
+});
+
+const mfaVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many MFA attempts. Please wait before trying again.' },
 });
 
 router.get('/csrf-token', csrfToken);
@@ -39,19 +59,25 @@ router.post('/refresh', validateCsrf, handleRefresh);
 
 router.get('/me', authenticate, handleMe);
 
-router.get('/verify-email', handleVerifyEmail);
+const verifyEmailLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many verification attempts.' },
+});
+
+router.get('/verify-email', verifyEmailLimiter, handleVerifyEmail);
 
 router.post('/forgot-password', forgotLimiter, validateCsrf, handleForgotPassword);
 
-router.post('/reset-password', validateCsrf, validatePasswordReset, handleResetPassword);
+router.post('/reset-password', resetLimiter, validateCsrf, validatePasswordReset, handleResetPassword);
 
-router.post('/mfa/generate', authenticate, validateCsrf, handleGenerateMFA);
+router.post('/mfa/generate', authenticate, mfaGenerateLimiter, validateCsrf, handleGenerateMFA);
 
-router.post('/mfa/enable', authenticate, validateCsrf, handleEnableMFA);
+router.post('/mfa/enable', authenticate, mfaVerifyLimiter, validateCsrf, handleEnableMFA);
 
-router.post('/mfa/disable', authenticate, validateCsrf, handleDisableMFA);
+router.post('/mfa/disable', authenticate, mfaVerifyLimiter, validateCsrf, handleDisableMFA);
 
-router.post('/mfa/backup-codes', authenticate, validateCsrf, handleBackupCodes);
+router.post('/mfa/backup-codes', authenticate, mfaGenerateLimiter, validateCsrf, handleBackupCodes);
 
 router.get('/sessions', authenticate, handleSessions);
 
