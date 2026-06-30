@@ -185,16 +185,15 @@ export async function register({ email, password, ip, userAgent }) {
     throw new AppError('Cannot verify password security. Please try again later.', 503);
   }
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-  const verifyToken = randomToken(32);
   const user = {
     id: uuidv4(),
     email: email.toLowerCase(),
     password: hashedPassword,
     role: 'user',
     createdAt: new Date().toISOString(),
-    emailVerified: false,
-    emailVerificationToken: verifyToken,
-    emailVerificationExpires: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    emailVerified: true,
+    emailVerificationToken: null,
+    emailVerificationExpires: null,
     mfaSecret: null,
     mfaEnabled: false,
     failedLoginAttempts: 0,
@@ -207,8 +206,7 @@ export async function register({ email, password, ip, userAgent }) {
   saveUsers(users);
   logAction({ userId: user.id, action: 'REGISTER', details: { email: user.email }, ip, userAgent });
   logger.info({ userId: user.id }, 'User registered');
-  stubEmail(email, 'Verify your email', `Verify: /api/auth/verify-email?token=${verifyToken}`);
-  return { id: user.id, email: user.email, role: user.role, emailVerified: false };
+  return { id: user.id, email: user.email, role: user.role, emailVerified: true };
 }
 
 export async function authenticate(email, password, totpCode, ip, userAgent) {
