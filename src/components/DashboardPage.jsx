@@ -5,14 +5,19 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch('/api/auth/me', { credentials: 'include' })
-      .then((res) => {
-        if (!res.ok) throw new Error('Not authenticated')
-        return res.json()
-      })
-      .then((data) => setUser(data.user))
-      .catch(() => { window.location.href = '/' })
-      .finally(() => setLoading(false))
+    let cancelled = false
+    function checkAuth() {
+      return fetch('/api/auth/me', { credentials: 'include' })
+        .then((res) => {
+          if (!res.ok) throw new Error('Not authenticated')
+          return res.json()
+        })
+        .then((data) => { if (!cancelled) setUser(data.user) })
+        .catch(() => { if (!cancelled) window.location.href = '/' })
+    }
+    checkAuth().finally(() => { if (!cancelled) setLoading(false) })
+    const interval = setInterval(checkAuth, 30000)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
   function handleLogout() {
