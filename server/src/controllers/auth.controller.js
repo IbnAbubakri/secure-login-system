@@ -35,6 +35,8 @@ function clearAuthCookies(res) {
 }
 
 function loginResponse(res, user, req) {
+  revokeAllUserRefreshTokens(user.id);
+  deleteAllUserSessions(user.id);
   const sessionId = createSession(user.id, req.clientIp, req.clientUA);
   const payload = { sub: user.id, email: user.email, role: user.role, sessionId, ip: req.clientIp };
   const accessToken = generateAccessToken(payload);
