@@ -16,8 +16,10 @@ export default function DashboardPage() {
         .catch(() => { if (!cancelled) window.location.href = '/' })
     }
     checkAuth().finally(() => { if (!cancelled) setLoading(false) })
-    const interval = setInterval(checkAuth, 30000)
-    return () => { cancelled = true; clearInterval(interval) }
+    const interval = setInterval(checkAuth, 5000)
+    const onVisibility = () => { if (document.visibilityState === 'visible') checkAuth() }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { cancelled = true; clearInterval(interval); document.removeEventListener('visibilitychange', onVisibility) }
   }, [])
 
   function handleLogout() {
