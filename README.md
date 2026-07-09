@@ -2,6 +2,14 @@
 
 A production-grade authentication system built with React, Node.js, and Express. Hardened against 46 security and code-quality issues across 3 audit rounds.
 
+## Demo Credentials
+
+```
+Demo:  demo@vault.dev / VaultXy7!kqmn92
+```
+
+The demo account is auto-seeded on startup when no users exist. Email is pre-verified.
+
 ## Features
 
 **Security**
@@ -61,15 +69,6 @@ npm run dev
 The Vite dev server proxies `/api/*` to the backend on port 4000.
 
 Open [http://localhost:5173](http://localhost:5173).
-
-### Demo Credentials
-
-```
-Email:    demo@vault.dev
-Password: VaultXy7!kqmn92
-```
-
-The demo account is auto-seeded on startup when no users exist. Email is pre-verified.
 
 ### Production Build
 
