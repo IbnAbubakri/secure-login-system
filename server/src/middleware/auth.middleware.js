@@ -1,3 +1,6 @@
+// © 2026 Abubakri Faaruq Adebowale (IbnAbubakri). All rights reserved.
+// Faruqsuzay@gmail.com | +2349061345507
+
 import { verifyAccessToken } from '../services/token.service.js';
 import { getUserById } from '../services/auth.service.js';
 import { checkSessionActivity, updateSessionActivity, getSessionById } from '../services/token.service.js';

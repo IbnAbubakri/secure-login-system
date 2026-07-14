@@ -1,3 +1,6 @@
+// © 2026 Abubakri Faaruq Adebowale (IbnAbubakri). All rights reserved.
+// Faruqsuzay@gmail.com | +2349061345507
+
 import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { loadJSON, saveJSON } from './utils/fileStore.js';

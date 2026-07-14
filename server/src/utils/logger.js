@@ -1,3 +1,6 @@
+// © 2026 Abubakri Faaruq Adebowale (IbnAbubakri). All rights reserved.
+// Faruqsuzay@gmail.com | +2349061345507
+
 import pino from 'pino';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';

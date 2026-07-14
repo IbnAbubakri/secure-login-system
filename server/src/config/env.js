@@ -1,3 +1,6 @@
+// © 2026 Abubakri Faaruq Adebowale (IbnAbubakri). All rights reserved.
+// Faruqsuzay@gmail.com | +2349061345507
+
 import { config } from 'dotenv';
 import randomToken from '../utils/randomToken.js';
 import { resolve, dirname } from 'path';
