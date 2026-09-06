@@ -27,9 +27,12 @@ function commonValidation(email, password) {
 }
 
 export function validateLogin(req, res, next) {
+  const policy = getPasswordPolicy();
   const errors = commonValidation(req.body.email);
   if (!req.body.password || typeof req.body.password !== 'string') {
     errors.push('Password is required.');
+  } else if (req.body.password.length > policy.maxLength) {
+    errors.push('Password is too long.');
   }
   if (errors.length) return next(new AppError(errors.join(' '), 400));
   req.body.email = sanitize(req.body.email).toLowerCase();

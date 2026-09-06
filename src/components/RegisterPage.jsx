@@ -86,8 +86,10 @@ export default function RegisterPage() {
       abortRef.current = null
 
       if (res.ok) {
-        setAlert({ type: 'success', message: 'Account created. Redirecting\u2026' })
-        setTimeout(() => { window.location.href = '/dashboard' }, 800)
+        setAlert({ type: 'success', message: 'Account created. Check your email to verify your address, then sign in.' })
+        setEmail('')
+        setPassword('')
+        setConfirmPassword('')
       } else {
         const data = await res.json().catch(() => ({}))
         setAlert({ type: 'error', message: data.error || 'Registration failed.' })

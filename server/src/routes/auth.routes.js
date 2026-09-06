@@ -22,17 +22,21 @@ const loginLimiter = rateLimit({
   message: { error: 'Too many attempts. Please wait before trying again.' },
 });
 
+const registerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many registration attempts. Please wait before trying again.' },
+});
+
 const forgotLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 3,
   standardHeaders: true, legacyHeaders: false,
-  keyGenerator: (req) => req.body?.email || req.ip,
   message: { error: 'Too many requests. Please wait before trying again.' },
 });
 
 const resetLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
-  keyGenerator: (req) => req.body?.token || req.ip,
   message: { error: 'Too many reset attempts. Please wait before trying again.' },
 });
 
@@ -52,7 +56,7 @@ router.get('/csrf-token', csrfToken);
 
 router.get('/password-policy', handlePasswordPolicy);
 
-router.post('/register', validateCsrf, validateRegister, handleRegister);
+router.post('/register', registerLimiter, validateCsrf, validateRegister, handleRegister);
 
 router.post('/login', loginLimiter, validateCsrf, validateLogin, handleLogin);
 

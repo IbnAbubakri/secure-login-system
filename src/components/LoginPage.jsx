@@ -75,9 +75,9 @@ export default function LoginPage() {
     if (!isFormValid) return
 
     submitLogin({ email: email.trim(), password })
-  }, [email, password, remember, isFormValid, mfaStep, mfaEmail, totpCode, csrfToken])
+  }, [email, password, isFormValid, mfaStep, mfaEmail, totpCode, submitLogin])
 
-  async function submitLogin(body) {
+  const submitLogin = useCallback(async (body) => {
     setLoading(true)
     const controller = new AbortController()
     abortRef.current = controller
@@ -134,7 +134,7 @@ export default function LoginPage() {
         setAlert({ type: 'error', message: 'Network error. Check your connection and try again.' })
       }
     }
-  }
+  }, [csrfToken, remember, email])
 
   function handleCancelMfa() {
     setMfaStep(false)

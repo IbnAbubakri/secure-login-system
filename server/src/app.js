@@ -12,13 +12,27 @@ import env from './config/env.js';
 import authRoutes from './routes/auth.routes.js';
 import errorHandler from './middleware/error.middleware.js';
 import requestContext from './middleware/requestContext.middleware.js';
-import logger from './utils/logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 
-app.use(helmet());
+app.set('trust proxy', env.isVer() ? true : 1);
+
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'"],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+    },
+  },
+}));
 
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: 200,
@@ -33,18 +47,6 @@ app.use((req, res, next) => {
   });
   next();
 });
-app.use(helmet.contentSecurityPolicy({
-  directives: {
-    defaultSrc: ["'self'"],
-    scriptSrc: ["'self'"],
-    styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-    fontSrc: ["'self'", 'https://fonts.gstatic.com'],
-    imgSrc: ["'self'", 'data:'],
-    connectSrc: ["'self'"],
-    frameSrc: ["'none'"],
-    objectSrc: ["'none'"],
-  },
-}));
 
 app.use(cors({
   origin: env.CORS_ORIGIN,
@@ -68,7 +70,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-if (env.isProd()) {
+if (env.isStandalone()) {
   const distPath = resolve(__dirname, '../../dist');
   app.use(express.static(distPath));
   app.get('*', (req, res) => {

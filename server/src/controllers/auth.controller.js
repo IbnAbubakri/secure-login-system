@@ -10,8 +10,8 @@ import {
   generateAccessToken, generateRefreshToken,
   rotateRefreshToken, revokeRefreshToken,
   revokeAllUserRefreshTokens, getStoredRefreshToken,
-  createSession, updateSessionActivity, getSessionsByUserId,
-  deleteSession, deleteAllUserSessions,
+  createSession, getSessionsByUserId,
+  deleteSession, deleteAllUserSessions, getSessionById,
 } from '../services/token.service.js';
 import logger from '../utils/logger.js';
 import { logAction } from '../services/audit.service.js';
@@ -37,13 +37,11 @@ function clearAuthCookies(res) {
   res.clearCookie('sessionId', { path: '/' });
 }
 
-function loginResponse(res, user, req) {
-  revokeAllUserRefreshTokens(user.id);
-  deleteAllUserSessions(user.id);
-  const sessionId = createSession(user.id, req.clientIp, req.clientUA);
-  const payload = { sub: user.id, email: user.email, role: user.role, sessionId, ip: req.clientIp };
+async function loginResponse(res, user, req) {
+  const sessionId = await createSession(user.id, req.clientIp, req.clientUA);
+  const payload = { sub: user.id, email: user.email, role: user.role, sessionId, ip: req.clientIp, ua: req.clientUA };
   const accessToken = generateAccessToken(payload);
-  const refreshToken = generateRefreshToken(user.id);
+  const refreshToken = await generateRefreshToken(user.id);
   res.cookie('sessionId', sessionId, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
@@ -62,7 +60,7 @@ export async function handleLogin(req, res, next) {
     if (result.mfaRequired) {
       return res.json({ mfaRequired: true, email: result.tempEmail });
     }
-    loginResponse(res, result, req);
+    await loginResponse(res, result, req);
     logger.info({ userId: result.id }, 'Login successful');
   } catch (err) { next(err); }
 }
@@ -71,20 +69,19 @@ export async function handleRegister(req, res, next) {
   try {
     const { email, password } = req.body;
     const user = await register({ email, password, ip: req.clientIp, userAgent: req.clientUA });
-    loginResponse(res, user, req);
     logger.info({ userId: user.id }, 'Registration successful');
-    res.status(201).json({ user });
+    res.status(201).json({ user, message: 'Account created. Check your email to verify your address.' });
   } catch (err) { next(err); }
 }
 
 export async function handleLogout(req, res, next) {
   try {
     const refreshToken = req.cookies?.refreshToken;
-    if (refreshToken) revokeRefreshToken(refreshToken);
+    if (refreshToken) await revokeRefreshToken(refreshToken);
     const sessionId = req.cookies?.sessionId;
-    if (sessionId) deleteSession(sessionId);
+    if (sessionId) await deleteSession(sessionId);
     clearAuthCookies(res);
-    logAction({ userId: req.user?.id, action: 'LOGOUT', details: {}, ip: req.clientIp, userAgent: req.clientUA });
+    await logAction({ userId: req.user?.id, action: 'LOGOUT', details: {}, ip: req.clientIp, userAgent: req.clientUA });
     logger.info('Logout successful');
     res.json({ message: 'Logged out.' });
   } catch (err) { next(err); }
@@ -94,15 +91,27 @@ export async function handleRefresh(req, res, next) {
   try {
     const old = req.cookies?.refreshToken;
     if (!old) return res.status(401).json({ error: 'Refresh token required.' });
-    const stored = getStoredRefreshToken(old);
+    const stored = await getStoredRefreshToken(old);
     if (!stored) { clearAuthCookies(res); return res.status(401).json({ error: 'Invalid or expired refresh token.' }); }
-    const user = getUserById(stored.userId);
-    if (!user) { revokeRefreshToken(old); clearAuthCookies(res); return res.status(401).json({ error: 'User not found.' }); }
-    const newRefresh = rotateRefreshToken(old, user.id);
-    if (!newRefresh) { revokeRefreshToken(old); clearAuthCookies(res); return res.status(401).json({ error: 'Token already rotated.' }); }
-    const newSessionId = createSession(user.id, req.clientIp, req.clientUA);
+    if (stored.rotated) {
+      await revokeAllUserRefreshTokens(stored.userId);
+      await deleteAllUserSessions(stored.userId);
+      clearAuthCookies(res);
+      await logAction({ userId: stored.userId, action: 'REFRESH_TOKEN_REUSE_DETECTED', details: {}, ip: req.clientIp, userAgent: req.clientUA, severity: 'high' });
+      return res.status(401).json({ error: 'Refresh token reuse detected. Please sign in again.' });
+    }
+    const user = await getUserById(stored.userId);
+    if (!user) { await revokeRefreshToken(old); clearAuthCookies(res); return res.status(401).json({ error: 'User not found.' }); }
+    const newRefresh = await rotateRefreshToken(old, user.id);
+    if (!newRefresh) {
+      await revokeAllUserRefreshTokens(user.id);
+      await deleteAllUserSessions(user.id);
+      clearAuthCookies(res);
+      return res.status(401).json({ error: 'Refresh token reuse detected. Please sign in again.' });
+    }
+    const newSessionId = await createSession(user.id, req.clientIp, req.clientUA);
     const oldSessionId = req.cookies?.sessionId;
-    if (oldSessionId) deleteSession(oldSessionId);
+    if (oldSessionId) await deleteSession(oldSessionId);
     res.cookie('sessionId', newSessionId, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -110,7 +119,7 @@ export async function handleRefresh(req, res, next) {
       path: '/',
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
-    const accessToken = generateAccessToken({ sub: user.id, email: user.email, role: user.role, sessionId: newSessionId, ip: req.clientIp });
+    const accessToken = generateAccessToken({ sub: user.id, email: user.email, role: user.role, sessionId: newSessionId, ip: req.clientIp, ua: req.clientUA });
     setAuthCookies(res, accessToken, newRefresh);
     res.json({ user });
   } catch (err) { next(err); }
@@ -118,7 +127,7 @@ export async function handleRefresh(req, res, next) {
 
 export async function handleMe(req, res, next) {
   try {
-    const full = getUserById(req.user.id);
+    const full = await getUserById(req.user.id);
     res.json({ user: full });
   } catch (err) { next(err); }
 }
@@ -141,9 +150,9 @@ export async function handleResetPassword(req, res, next) {
   try {
     const result = await resetPassword(req.body.token, req.body.password, req.clientIp, req.clientUA);
     if (result.userId) {
-      revokeAllUserRefreshTokens(result.userId);
-      deleteAllUserSessions(result.userId);
-      logAction({ userId: result.userId, action: 'PASSWORD_RESET_SESSIONS_REVOKED', details: {}, ip, userAgent, severity: 'high' });
+      await revokeAllUserRefreshTokens(result.userId);
+      await deleteAllUserSessions(result.userId);
+      await logAction({ userId: result.userId, action: 'PASSWORD_RESET_SESSIONS_REVOKED', details: {}, ip: req.clientIp, userAgent: req.clientUA, severity: 'high' });
     }
     clearAuthCookies(res);
     res.json({ message: result.message });
@@ -166,38 +175,38 @@ export async function handleEnableMFA(req, res, next) {
 
 export async function handleDisableMFA(req, res, next) {
   try {
-    const result = await disableMFA(req.user.id, req.clientIp, req.clientUA);
+    const result = await disableMFA(req.user.id, req.body.code, req.clientIp, req.clientUA);
     res.json(result);
   } catch (err) { next(err); }
 }
 
 export async function handleSessions(req, res, next) {
   try {
-    const sessions = getSessionsByUserId(req.user.id);
+    const sessions = await getSessionsByUserId(req.user.id);
     res.json({ sessions });
   } catch (err) { next(err); }
 }
 
 export async function handleDeleteSession(req, res, next) {
   try {
-    const session = getSessionById(req.params.sessionId);
+    const session = await getSessionById(req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Session not found.' });
     if (session.userId !== req.user.id) {
-      logAction({ userId: req.user.id, action: 'SESSION_DELETE_FOREIGN', details: { targetSessionId: req.params.sessionId }, ip: req.clientIp, userAgent: req.clientUA, severity: 'high' });
+      await logAction({ userId: req.user.id, action: 'SESSION_DELETE_FOREIGN', details: { targetSessionId: req.params.sessionId }, ip: req.clientIp, userAgent: req.clientUA, severity: 'high' });
       return res.status(403).json({ error: 'Cannot delete another user\'s session.' });
     }
-    deleteSession(req.params.sessionId);
-    logAction({ userId: req.user.id, action: 'SESSION_DELETED', details: { sessionId: req.params.sessionId }, ip: req.clientIp, userAgent: req.clientUA });
+    await deleteSession(req.params.sessionId);
+    await logAction({ userId: req.user.id, action: 'SESSION_DELETED', details: { sessionId: req.params.sessionId }, ip: req.clientIp, userAgent: req.clientUA });
     res.json({ message: 'Session removed.' });
   } catch (err) { next(err); }
 }
 
 export async function handleLogoutAll(req, res, next) {
   try {
-    revokeAllUserRefreshTokens(req.user.id);
-    deleteAllUserSessions(req.user.id);
+    await revokeAllUserRefreshTokens(req.user.id);
+    await deleteAllUserSessions(req.user.id);
     clearAuthCookies(res);
-    logAction({ userId: req.user.id, action: 'LOGOUT_ALL_DEVICES', details: {}, ip: req.clientIp, userAgent: req.clientUA });
+    await logAction({ userId: req.user.id, action: 'LOGOUT_ALL_DEVICES', details: {}, ip: req.clientIp, userAgent: req.clientUA });
     logger.info({ userId: req.user.id }, 'Logged out from all devices');
     res.json({ message: 'Logged out from all devices.' });
   } catch (err) { next(err); }

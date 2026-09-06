@@ -3,30 +3,20 @@
 
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import env from '../config/env.js';
-import { loadJSON, saveJSON } from '../utils/fileStore.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const REFRESH_PATH = resolve(__dirname, '../../data/refresh-tokens.json');
-const SESSIONS_PATH = resolve(__dirname, '../../data/sessions.json');
-
-function loadRT() { return loadJSON(REFRESH_PATH, []); }
-function saveRT(t) { saveJSON(REFRESH_PATH, t); }
-function loadSessions() { return loadJSON(SESSIONS_PATH, []); }
-function saveSessions(s) { saveJSON(SESSIONS_PATH, s); }
+import { query } from '../db/index.js';
 
 export function generateAccessToken(payload) {
   return jwt.sign(payload, env.JWT_SECRET, { expiresIn: env.JWT_ACCESS_EXPIRES_IN });
 }
 
-export function generateRefreshToken(userId) {
+export async function generateRefreshToken(userId) {
   const token = uuidv4();
   const expiresAt = new Date(Date.now() + parseDuration(env.JWT_REFRESH_EXPIRES_IN)).toISOString();
-  const tokens = loadRT();
-  tokens.push({ token, userId, expiresAt });
-  saveRT(tokens);
+  await query(
+    'INSERT INTO refresh_tokens (token, user_id, expires_at, rotated) VALUES ($1, $2, $3, false)',
+    [token, userId, expiresAt],
+  );
   return token;
 }
 
@@ -34,86 +24,106 @@ export function verifyAccessToken(token) {
   return jwt.verify(token, env.JWT_SECRET);
 }
 
-export function rotateRefreshToken(oldToken, userId) {
-  const tokens = loadRT();
-  const filtered = tokens.filter((t) => t.token !== oldToken);
-  if (filtered.length === tokens.length) return null;
+export async function rotateRefreshToken(oldToken, userId) {
+  const { rowCount } = await query('SELECT 1 FROM refresh_tokens WHERE token = $1', [oldToken]);
+  if (rowCount === 0) return null;
   const newToken = uuidv4();
   const expiresAt = new Date(Date.now() + parseDuration(env.JWT_REFRESH_EXPIRES_IN)).toISOString();
-  filtered.push({ token: newToken, userId, expiresAt });
-  saveRT(filtered);
+  await query('UPDATE refresh_tokens SET rotated = true WHERE token = $1', [oldToken]);
+  await query(
+    'INSERT INTO refresh_tokens (token, user_id, expires_at, rotated) VALUES ($1, $2, $3, false)',
+    [newToken, userId, expiresAt],
+  );
   return newToken;
 }
 
-export function revokeRefreshToken(token) {
-  saveRT(loadRT().filter((t) => t.token !== token));
+export async function revokeRefreshToken(token) {
+  await query('DELETE FROM refresh_tokens WHERE token = $1', [token]);
 }
 
-export function revokeAllUserRefreshTokens(userId) {
-  saveRT(loadRT().filter((t) => t.userId !== userId));
+export async function revokeAllUserRefreshTokens(userId) {
+  await query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
 }
 
-export function getStoredRefreshToken(token) {
-  const tokens = loadRT();
-  const found = tokens.find((t) => t.token === token);
+export async function getStoredRefreshToken(token) {
+  const { rows } = await query(
+    'SELECT token, user_id, expires_at, rotated FROM refresh_tokens WHERE token = $1',
+    [token],
+  );
+  const found = rows[0];
   if (!found) return null;
-  if (new Date(found.expiresAt) < new Date()) {
-    revokeRefreshToken(token);
+  if (new Date(found.expires_at) < new Date()) {
+    await revokeRefreshToken(token);
     return null;
   }
-  return found;
+  return { token: found.token, userId: found.user_id, expiresAt: found.expires_at, rotated: found.rotated };
 }
 
 /* Session management */
 
-export function createSession(userId, ip, userAgent) {
-  const sessions = loadSessions();
+export async function createSession(userId, ip, userAgent) {
   const now = new Date();
   const id = uuidv4();
-  sessions.push({
-    id,
-    userId,
-    createdAt: now.toISOString(),
-    lastActivity: now.toISOString(),
-    ip,
-    userAgent,
-  });
-  saveSessions(sessions);
+  await query(
+    'INSERT INTO sessions (id, user_id, created_at, last_activity, ip, user_agent) VALUES ($1, $2, $3, $3, $4, $5)',
+    [id, userId, now.toISOString(), ip, userAgent],
+  );
   return id;
 }
 
-export function updateSessionActivity(sessionId) {
-  const sessions = loadSessions();
-  const s = sessions.find((s) => s.id === sessionId);
-  if (s) { s.lastActivity = new Date().toISOString(); saveSessions(sessions); }
+export async function updateSessionActivity(sessionId) {
+  await query('UPDATE sessions SET last_activity = now() WHERE id = $1', [sessionId]);
 }
 
-export function checkSessionActivity(sessionId, idleMinutes) {
-  const sessions = loadSessions();
-  const s = sessions.find((s) => s.id === sessionId);
-  if (!s) return false;
-  const elapsed = (new Date() - new Date(s.lastActivity)) / 60000;
-  if (elapsed > idleMinutes) {
-    saveSessions(sessions.filter((x) => x.id !== sessionId));
-    return false;
-  }
-  return true;
+export async function checkSessionActivity(sessionId, idleMinutes) {
+  const { rows } = await query(
+    'SELECT EXTRACT(EPOCH FROM (now() - last_activity)) / 60 < $1 AS active FROM sessions WHERE id = $2',
+    [idleMinutes, sessionId],
+  );
+  const row = rows[0];
+  if (!row) return false;
+  if (row.active) return true;
+  await query('DELETE FROM sessions WHERE id = $1', [sessionId]);
+  return false;
 }
 
-export function getSessionsByUserId(userId) {
-  return loadSessions().filter((s) => s.userId === userId);
+export async function getSessionsByUserId(userId) {
+  const { rows } = await query(
+    'SELECT id, created_at, last_activity, ip, user_agent FROM sessions WHERE user_id = $1 ORDER BY last_activity DESC',
+    [userId],
+  );
+  return rows.map((s) => ({
+    id: s.id,
+    createdAt: s.created_at,
+    lastActivity: s.last_activity,
+    ip: s.ip,
+    userAgent: s.user_agent,
+  }));
 }
 
-export function getSessionById(sessionId) {
-  return loadSessions().find((s) => s.id === sessionId) || null;
+export async function getSessionById(sessionId) {
+  const { rows } = await query(
+    'SELECT id, user_id, created_at, last_activity, ip, user_agent FROM sessions WHERE id = $1',
+    [sessionId],
+  );
+  const s = rows[0];
+  if (!s) return null;
+  return {
+    id: s.id,
+    userId: s.user_id,
+    createdAt: s.created_at,
+    lastActivity: s.last_activity,
+    ip: s.ip,
+    userAgent: s.user_agent,
+  };
 }
 
-export function deleteSession(sessionId) {
-  saveSessions(loadSessions().filter((s) => s.id !== sessionId));
+export async function deleteSession(sessionId) {
+  await query('DELETE FROM sessions WHERE id = $1', [sessionId]);
 }
 
-export function deleteAllUserSessions(userId) {
-  saveSessions(loadSessions().filter((s) => s.userId !== userId));
+export async function deleteAllUserSessions(userId) {
+  await query('DELETE FROM sessions WHERE user_id = $1', [userId]);
 }
 
 function parseDuration(dur) {
@@ -128,5 +138,3 @@ function parseDuration(dur) {
     default: return 7 * 24 * 60 * 60 * 1000;
   }
 }
-
-

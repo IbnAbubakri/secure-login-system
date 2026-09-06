@@ -2,19 +2,14 @@
 // Faruqsuzay@gmail.com | +2349061345507
 
 import bcrypt from 'bcrypt';
-import { resolve, dirname } from 'path';
-import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 import AppError from '../utils/AppError.js';
 import logger from '../utils/logger.js';
 import { logAction, securityAlert } from './audit.service.js';
-import { loadJSON, saveJSON } from '../utils/fileStore.js';
+import { query } from '../db/index.js';
 import randomToken from '../utils/randomToken.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const USERS_PATH = resolve(__dirname, '../../data/users.json');
-const ATTEMPTS_PATH = resolve(__dirname, '../../data/login-attempts.json');
 const SALT_ROUNDS = 12;
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_MINUTES = 15;
@@ -29,11 +24,6 @@ const PASSWORD_POLICY = {
   historySize: 5,
   expiryDays: 90,
 };
-
-function loadUsers() { return loadJSON(USERS_PATH, []); }
-function saveUsers(u) { saveJSON(USERS_PATH, u); }
-function loadAttempts() { return loadJSON(ATTEMPTS_PATH, {}); }
-function saveAttempts(a) { saveJSON(ATTEMPTS_PATH, a); }
 
 export function getPasswordPolicy() {
   return {
@@ -107,72 +97,127 @@ function lockoutKey(email, ip) {
   return `${email.toLowerCase()}:${ip || 'unknown'}`;
 }
 
-function isAccountLocked(email, ip) {
-  const attempts = loadAttempts();
-  const key = lockoutKey(email, ip);
-  const record = attempts[key];
+async function isAccountLocked(email, ip) {
+  const { rows } = await query(
+    'SELECT count FROM login_attempts WHERE key = $1',
+    [lockoutKey(email, ip)],
+  );
+  const record = rows[0];
   if (!record || record.count < MAX_ATTEMPTS) return false;
-  if (new Date(record.lockedUntil) > new Date()) return true;
-  delete attempts[key];
-  saveAttempts(attempts);
+  if (record.locked_until && new Date(record.locked_until) > new Date()) return true;
+  await query('DELETE FROM login_attempts WHERE key = $1', [lockoutKey(email, ip)]);
   return false;
 }
 
 const LOCKOUT_MULTI_IP_THRESHOLD = 3;
 
-function recordFailedAttempt(email, ip, userAgent) {
-  const attempts = loadAttempts();
+async function recordFailedAttempt(email, ip, userAgent) {
   const emailKey = email.toLowerCase();
   const ipKey = lockoutKey(email, ip);
   const now = new Date();
-  if (!attempts[ipKey] || new Date(attempts[ipKey].lockedUntil) < now) {
-    attempts[ipKey] = { count: 0, lastAttempt: now.toISOString(), lockedUntil: null, ips: [] };
-  }
-  if (!attempts[emailKey] || new Date(attempts[emailKey].lockedUntil) < now) {
-    attempts[emailKey] = { count: 0, lastAttempt: now.toISOString(), lockedUntil: null, ips: [] };
-  }
-  attempts[ipKey].count += 1;
-  attempts[emailKey].count += 1;
-  attempts[ipKey].lastAttempt = now.toISOString();
-  attempts[emailKey].lastAttempt = now.toISOString();
-  if (ip && !attempts[ipKey].ips.includes(ip)) {
-    attempts[ipKey].ips.push(ip);
-  }
-  if (ip && !attempts[emailKey].ips.includes(ip)) {
-    attempts[emailKey].ips.push(ip);
-    if (attempts[emailKey].ips.length >= LOCKOUT_MULTI_IP_THRESHOLD) {
-      securityAlert({
-        type: 'MULTI_IP_FAILED_LOGINS',
-        email: emailKey,
-        details: `Failed logins from ${attempts[emailKey].ips.length} different IPs: ${attempts[emailKey].ips.join(', ')}`,
-        ip,
-      });
+
+  async function bump(key) {
+    const { rows } = await query('SELECT count FROM login_attempts WHERE key = $1', [key]);
+    const isExpired = rows[0] && rows[0].locked_until && new Date(rows[0].locked_until) < now;
+    if (!rows[0] || isExpired) {
+      await query(
+        'INSERT INTO login_attempts (key, count, last_attempt, locked_until, ips) VALUES ($1, 1, now(), NULL, $2::text[])',
+        [key, ip ? [ip] : []],
+      );
+      return 1;
     }
+    const count = rows[0].count + 1;
+    await query('UPDATE login_attempts SET count = $1, last_attempt = now() WHERE key = $2', [count, key]);
+    return count;
   }
-  logger.warn({ email: emailKey, attempts: attempts[ipKey].count, ip }, 'Failed login attempt');
-  if (attempts[ipKey].count >= MAX_ATTEMPTS) {
-    const lockoutMin = getLockoutDuration(attempts[ipKey].count);
-    attempts[ipKey].lockedUntil = new Date(now.getTime() + lockoutMin * 60 * 1000).toISOString();
-    logger.warn({ email: emailKey, attempts: attempts[ipKey].count, lockoutMin, ip }, 'Account locked due to failed attempts');
+
+  const ipCount = await bump(ipKey);
+  const emailCount = await bump(emailKey);
+
+  if (ip && emailCount >= LOCKOUT_MULTI_IP_THRESHOLD) {
+    const { rows } = await query('SELECT ips FROM login_attempts WHERE key = $1', [emailKey]);
+    if (rows[0] && !rows[0].ips.includes(ip)) {
+      await query('UPDATE login_attempts SET ips = ips || $1::text[] WHERE key = $2', [[ip], emailKey]);
+      const { rows: ipRows } = await query('SELECT ips FROM login_attempts WHERE key = $1', [emailKey]);
+      if (ipRows[0].ips.length >= LOCKOUT_MULTI_IP_THRESHOLD) {
+        securityAlert({
+          type: 'MULTI_IP_FAILED_LOGINS',
+          email: emailKey,
+          details: `Failed logins from ${ipRows[0].ips.length} different IPs: ${ipRows[0].ips.join(', ')}`,
+          ip,
+        });
+      }
+    }
+  } else if (ip) {
+    await query('UPDATE login_attempts SET ips = CASE WHEN NOT (ips @> $2::text[]) THEN ips || $2::text[] ELSE ips END WHERE key = $1', [emailKey, [ip]]);
+  }
+
+  logger.warn({ email: emailKey, attempts: ipCount, ip, userAgent }, 'Failed login attempt');
+
+  if (ipCount >= MAX_ATTEMPTS) {
+    const minutes = getLockoutDuration(ipCount);
+    const lockedUntil = new Date(now.getTime() + minutes * 60 * 1000).toISOString();
+    await query('UPDATE login_attempts SET locked_until = $1 WHERE key = $2', [lockedUntil, ipKey]);
+    logger.warn({ email: emailKey, attempts: ipCount, lockoutMin: minutes, ip }, 'Account locked due to failed attempts');
     securityAlert({
       type: 'ACCOUNT_LOCKED',
       email: emailKey,
-      details: `Account locked for ${lockoutMin} minutes after ${attempts[ipKey].count} failed attempts from ${ip}`,
+      details: `Account locked for ${minutes} minutes after ${ipCount} failed attempts from ${ip}`,
       ip,
     });
   }
-  saveAttempts(attempts);
 }
 
-function clearFailedAttempts(email, ip) {
-  const attempts = loadAttempts();
-  delete attempts[lockoutKey(email, ip)];
-  saveAttempts(attempts);
+async function clearFailedAttempts(email, ip) {
+  await query('DELETE FROM login_attempts WHERE key = $1', [lockoutKey(email, ip)]);
+  await query('DELETE FROM login_attempts WHERE key = $1', [email.toLowerCase()]);
+}
+
+function mapUserRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    password: row.password,
+    role: row.role,
+    createdAt: row.created_at,
+    emailVerified: row.email_verified,
+    emailVerificationToken: row.email_verification_token,
+    emailVerificationExpires: row.email_verification_expires,
+    mfaSecret: row.mfa_secret,
+    mfaEnabled: row.mfa_enabled,
+    lastLogin: row.last_login,
+    passwordHistory: row.password_history || [],
+    passwordChangedAt: row.password_changed_at,
+    resetToken: row.reset_token,
+    resetTokenExpires: row.reset_token_expires,
+    mfaBackupCodes: row.mfa_backup_codes || [],
+  };
+}
+
+async function findUserByEmail(email) {
+  const { rows } = await query('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
+  return mapUserRow(rows[0]);
+}
+
+async function findUserById(id) {
+  const { rows } = await query('SELECT * FROM users WHERE id = $1', [id]);
+  return mapUserRow(rows[0]);
+}
+
+async function findUserByVerificationToken(token) {
+  const { rows } = await query('SELECT * FROM users WHERE email_verification_token = $1', [token]);
+  return mapUserRow(rows[0]);
+}
+
+async function findUserByResetToken(token) {
+  const { rows } = await query('SELECT * FROM users WHERE reset_token = $1', [token]);
+  return mapUserRow(rows[0]);
 }
 
 export async function register({ email, password, ip, userAgent }) {
-  const users = loadUsers();
-  if (users.some((u) => u.email === email.toLowerCase())) {
+  const existing = await findUserByEmail(email);
+  if (existing) {
     throw new AppError('Email already registered.', 409);
   }
   const complexityErrors = validatePasswordComplexity(password);
@@ -188,38 +233,53 @@ export async function register({ email, password, ip, userAgent }) {
     throw new AppError('Cannot verify password security. Please try again later.', 503);
   }
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-  const user = {
-    id: uuidv4(),
-    email: email.toLowerCase(),
-    password: hashedPassword,
+  const id = uuidv4();
+  const verificationToken = randomToken(32);
+  const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const created = new Date().toISOString();
+  await query(
+    `INSERT INTO users (id, email, password, role, created_at, email_verified, email_verification_token, email_verification_expires, mfa_secret, mfa_enabled, password_history, password_changed_at)
+     VALUES ($1, $2, $3, 'user', $4, false, $5, $6, NULL, false, '[]'::jsonb, $4)`,
+    [id, email.toLowerCase(), hashedPassword, created, verificationToken, verificationExpires],
+  );
+  const user = { id, email: email.toLowerCase(), role: 'user' };
+  logAction({ userId: id, action: 'REGISTER', details: { email: user.email }, ip, userAgent });
+  logger.info({ userId: id }, 'User registered');
+  stubEmail(user.email, 'Verify your Vault account', `Verify: ${appVerificationUrl(verificationToken)}`);
+  return {
+    id,
+    email: user.email,
     role: 'user',
-    createdAt: new Date().toISOString(),
-    emailVerified: true,
-    emailVerificationToken: null,
-    emailVerificationExpires: null,
-    mfaSecret: null,
-    mfaEnabled: false,
-    failedLoginAttempts: 0,
-    lockedUntil: null,
-    lastLogin: null,
-    passwordHistory: [],
-    passwordChangedAt: new Date().toISOString(),
+    emailVerified: false,
   };
-  users.push(user);
-  saveUsers(users);
-  logAction({ userId: user.id, action: 'REGISTER', details: { email: user.email }, ip, userAgent });
-  logger.info({ userId: user.id }, 'User registered');
-  return { id: user.id, email: user.email, role: user.role, emailVerified: true };
+}
+
+function appVerificationUrl(token) {
+  const origin = process.env.PUBLIC_ORIGIN || `http://localhost:${process.env.PORT || 4000}`;
+  return `${origin}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+}
+
+const DUMMY_HASH = '$2b$12$jKMF9kIud3EFjOtXpQ9pu.urQALrBGxNGf7majjophjGStsfGZ41m';
+
+async function verifyTotp(secret, token) {
+  if (!secret || typeof token !== 'string' || !/^[0-9]{6}$/.test(token)) return false;
+  try {
+    const { verify } = await import('otplib');
+    const result = await verify({ secret, token });
+    return result?.valid === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function authenticate(email, password, totpCode, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.email === email.toLowerCase());
+  const user = await findUserByEmail(email);
   if (!user) {
-    await new Promise((r) => setTimeout(r, 500));
+    await bcrypt.compare(password, DUMMY_HASH);
+    logger.warn({ email: email.toLowerCase(), ip }, 'Login attempt for unknown email');
     throw new AppError('Invalid email or password.', 401);
   }
-  if (isAccountLocked(email, ip)) {
+  if (await isAccountLocked(email, ip)) {
     logAction({ userId: user.id, action: 'LOGIN_LOCKED', details: { email: email.toLowerCase() }, ip, userAgent, severity: 'high' });
     throw new AppError('Account temporarily locked. Try again later.', 423);
   }
@@ -228,16 +288,15 @@ export async function authenticate(email, password, totpCode, ip, userAgent) {
   }
   const match = await bcrypt.compare(password, user.password);
   if (!match) {
-    recordFailedAttempt(email, ip, userAgent);
+    await recordFailedAttempt(email, ip, userAgent);
     throw new AppError('Invalid email or password.', 401);
   }
   if (user.mfaEnabled) {
     if (!totpCode) {
       return { mfaRequired: true, tempEmail: user.email };
     }
-    const { authenticator } = await import('otplib');
-    const isValid = authenticator.check(totpCode, user.mfaSecret);
-    if (!isValid) {
+    const isCodeValid = await verifyTotp(user.mfaSecret, totpCode);
+    if (!isCodeValid) {
       const codes = user.mfaBackupCodes || [];
       const codeHash = crypto.createHash('sha256').update(totpCode).digest('hex');
       const idx = codes.findIndex((bc) => bc.hash === codeHash && !bc.used);
@@ -245,44 +304,39 @@ export async function authenticate(email, password, totpCode, ip, userAgent) {
         logAction({ userId: user.id, action: 'MFA_FAILED', details: { email: email.toLowerCase() }, ip, userAgent, severity: 'high' });
         throw new AppError('Invalid two-factor code.', 401);
       }
-      user.mfaBackupCodes[idx].used = true;
+      codes[idx].used = true;
+      await query('UPDATE users SET mfa_backup_codes = $1 WHERE id = $2', [JSON.stringify(codes), user.id]);
       logAction({ userId: user.id, action: 'MFA_BACKUP_CODE_USED', details: {}, ip, userAgent, severity: 'high' });
     }
   }
-  clearFailedAttempts(email, ip);
-  user.lastLogin = new Date().toISOString();
-  user.failedLoginAttempts = 0;
-  user.lockedUntil = null;
-  saveUsers(users);
+  await clearFailedAttempts(email, ip);
+  await query('UPDATE users SET last_login = now() WHERE id = $1', [user.id]);
   logAction({ userId: user.id, action: 'LOGIN', details: { email: user.email }, ip, userAgent });
   logger.info({ userId: user.id }, 'User authenticated');
   return { id: user.id, email: user.email, role: user.role };
 }
 
 export async function verifyEmail(token, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.emailVerificationToken === token);
+  const user = await findUserByVerificationToken(token);
   if (!user) throw new AppError('Invalid verification token.', 400);
   if (new Date(user.emailVerificationExpires) < new Date()) {
     throw new AppError('Verification token expired.', 400);
   }
-  user.emailVerified = true;
-  user.emailVerificationToken = null;
-  user.emailVerificationExpires = null;
-  saveUsers(users);
+  await query(
+    'UPDATE users SET email_verified = true, email_verification_token = NULL, email_verification_expires = NULL WHERE id = $1',
+    [user.id],
+  );
   logAction({ userId: user.id, action: 'EMAIL_VERIFIED', details: { email: user.email }, ip, userAgent });
   logger.info({ userId: user.id }, 'Email verified');
   return { id: user.id, email: user.email };
 }
 
 export async function forgotPassword(email, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.email === email.toLowerCase());
+  const user = await findUserByEmail(email);
   if (!user) return { message: 'If that email exists, a reset link has been sent.' };
   const resetToken = randomToken(32);
-  user.resetToken = resetToken;
-  user.resetTokenExpires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-  saveUsers(users);
+  const resetExpires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  await query('UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3', [resetToken, resetExpires, user.id]);
   logAction({ userId: user.id, action: 'PASSWORD_RESET_REQUESTED', details: { email: user.email }, ip, userAgent, severity: 'high' });
   stubEmail(email, 'Password Reset', `Reset: /reset-password?token=${resetToken}`);
   logger.info({ userId: user.id }, 'Password reset requested');
@@ -294,9 +348,8 @@ export async function resetPassword(token, newPassword, ip, userAgent) {
   if (complexityErrors.length) {
     throw new AppError(complexityErrors.join(' '), 400);
   }
-  const users = loadUsers();
-  const user = users.find((u) => u.resetToken === token);
-  if (!user || new Date(user.resetTokenExpires) < new Date()) {
+  const user = await findUserByResetToken(token);
+  if (!user || (user.resetTokenExpires && new Date(user.resetTokenExpires) < new Date())) {
     throw new AppError('Invalid or expired reset token.', 400);
   }
   const pwned = await checkHIBP(newPassword);
@@ -307,36 +360,35 @@ export async function resetPassword(token, newPassword, ip, userAgent) {
   if (pwned === null) {
     throw new AppError('Cannot verify password security. Please try again later.', 503);
   }
-  if (!user.passwordHistory) user.passwordHistory = [];
-  for (const oldHash of user.passwordHistory) {
+  const history = user.passwordHistory || [];
+  for (const oldHash of history) {
     if (await bcrypt.compare(newPassword, oldHash)) {
       throw new AppError('Cannot reuse a recent password.', 400);
     }
   }
-  user.passwordHistory.push(user.password);
-  if (user.passwordHistory.length > PASSWORD_POLICY.historySize) {
-    user.passwordHistory.shift();
+  history.push(user.password);
+  if (history.length > PASSWORD_POLICY.historySize) {
+    history.shift();
   }
-  user.password = await bcrypt.hash(newPassword, SALT_ROUNDS);
-  user.passwordChangedAt = new Date().toISOString();
-  user.resetToken = null;
-  user.resetTokenExpires = null;
-  user.emailVerified = true;
-  saveUsers(users);
+  const newHash = await bcrypt.hash(newPassword, SALT_ROUNDS);
+  await query(
+    `UPDATE users SET password = $1, password_changed_at = now(), password_history = $2::jsonb,
+       reset_token = NULL, reset_token_expires = NULL, email_verified = true
+     WHERE id = $3`,
+    [newHash, JSON.stringify(history), user.id],
+  );
   logAction({ userId: user.id, action: 'PASSWORD_RESET_COMPLETED', details: {}, ip, userAgent, severity: 'high' });
   logger.info({ userId: user.id }, 'Password reset completed');
   return { userId: user.id, message: 'Password updated.' };
 }
 
 export async function generateMFASecret(userId, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.id === userId);
+  const user = await findUserById(userId);
   if (!user) throw new AppError('User not found.', 404);
-  const { authenticator } = await import('otplib');
-  const secret = authenticator.generateSecret();
-  const uri = authenticator.keyuri(user.email, 'Vault', secret);
-  user.mfaSecret = secret;
-  saveUsers(users);
+  const { generateSecret, generateURI } = await import('otplib');
+  const secret = generateSecret();
+  const uri = generateURI({ issuer: 'Vault', label: user.email, secret });
+  await query('UPDATE users SET mfa_secret = $1 WHERE id = $2', [secret, userId]);
   logAction({ userId, action: 'MFA_SECRET_GENERATED', details: {}, ip, userAgent, severity: 'high' });
   return { secret, uri };
 }
@@ -353,30 +405,33 @@ function generateBackupCodes() {
 }
 
 export async function enableMFA(userId, code, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.id === userId);
+  const user = await findUserById(userId);
   if (!user || !user.mfaSecret) throw new AppError('MFA not initialized.', 400);
-  const { authenticator } = await import('otplib');
-  if (!authenticator.check(code, user.mfaSecret)) {
+  const isCodeValid = await verifyTotp(user.mfaSecret, code);
+  if (!isCodeValid) {
     logAction({ userId, action: 'MFA_ENABLE_FAILED', details: {}, ip, userAgent, severity: 'high' });
     throw new AppError('Invalid code.', 401);
   }
   const { codes, hashes } = generateBackupCodes();
-  user.mfaEnabled = true;
-  user.mfaBackupCodes = hashes;
-  saveUsers(users);
+  await query(
+    'UPDATE users SET mfa_enabled = true, mfa_backup_codes = $1 WHERE id = $2',
+    [JSON.stringify(hashes), userId],
+  );
   logAction({ userId, action: 'MFA_ENABLED', details: {}, ip, userAgent, severity: 'high' });
   logger.info({ userId: user.id }, 'MFA enabled');
   return { mfaEnabled: true, backupCodes: codes };
 }
 
-export async function disableMFA(userId, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.id === userId);
+export async function disableMFA(userId, code, ip, userAgent) {
+  const user = await findUserById(userId);
   if (!user) throw new AppError('User not found.', 404);
-  user.mfaSecret = null;
-  user.mfaEnabled = false;
-  saveUsers(users);
+  if (!user.mfaEnabled || !user.mfaSecret) throw new AppError('MFA is not enabled for this account.', 400);
+  const isCodeValid = await verifyTotp(user.mfaSecret, code);
+  if (!isCodeValid) {
+    logAction({ userId, action: 'MFA_DISABLE_FAILED', details: {}, ip, userAgent, severity: 'high' });
+    throw new AppError('Invalid two-factor code.', 401);
+  }
+  await query('UPDATE users SET mfa_secret = NULL, mfa_enabled = false, mfa_backup_codes = NULL WHERE id = $1', [userId]);
   logAction({ userId, action: 'MFA_DISABLED', details: {}, ip, userAgent, severity: 'high' });
   securityAlert({
     type: 'MFA_DISABLED',
@@ -388,9 +443,8 @@ export async function disableMFA(userId, ip, userAgent) {
   return { mfaEnabled: false };
 }
 
-export function getUserById(id) {
-  const users = loadUsers();
-  const user = users.find((u) => u.id === id);
+export async function getUserById(id) {
+  const user = await findUserById(id);
   if (!user) return null;
   return {
     id: user.id,
@@ -404,17 +458,19 @@ export function getUserById(id) {
 }
 
 export async function regenerateBackupCodes(userId, ip, userAgent) {
-  const users = loadUsers();
-  const user = users.find((u) => u.id === userId);
+  const user = await findUserById(userId);
   if (!user) throw new AppError('User not found.', 404);
   const { codes, hashes } = generateBackupCodes();
-  user.mfaBackupCodes = hashes;
-  saveUsers(users);
+  await query('UPDATE users SET mfa_backup_codes = $1 WHERE id = $2', [JSON.stringify(hashes), userId]);
   logAction({ userId, action: 'MFA_BACKUP_CODES_REGENERATED', details: {}, ip, userAgent, severity: 'high' });
   logger.info({ userId: user.id }, 'MFA backup codes regenerated');
   return { backupCodes: codes };
 }
 
 function stubEmail(to, subject, body) {
+  if (process.env.NODE_ENV === 'production') {
+    logger.info({ emailTo: to, subject }, '[EMAIL STUB] Email delivery not configured for production.');
+    return;
+  }
   logger.info({ emailTo: to, subject }, `[EMAIL STUB] ${body}`);
 }

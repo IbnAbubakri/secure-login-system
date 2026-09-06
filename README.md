@@ -16,14 +16,15 @@ The demo account is auto-seeded on startup when no users exist. Email is pre-ver
 - Bcrypt password hashing (12 rounds) with HIBP breach checking (fail-closed)
 - JWT access/refresh token rotation with HttpOnly cookies (SameSite=Strict)
 - CSRF protection via Double Submit Cookie pattern (httpOnly cookie, 32-byte random)
-- Multi-layered rate limiting: global (200/15min), login (20/15min), forgot-password (3/15min per email), reset (5/15min per token), MFA, email verification
+- Multi-layered rate limiting: global (200/15min), login (20/15min), register (10/15min), forgot-password (3/15min per IP), reset (5/15min per IP), MFA, email verification
 - Account lockout with exponential backoff (IP + email-level tracking, multi-IP detection)
-- Email verification enforcement (auto-verified with stub email system)
+- Email verification enforcement (stub email system for local development)
 - Multi-factor authentication (TOTP) with backup recovery codes
-- Session management: idle timeout (30min), absolute lifetime (24h), IP/session binding, remote logout, ownership validation
+- Session management: idle timeout (30min), absolute lifetime (24h), IP/user-agent binding, remote logout, ownership validation
 - Input sanitization (HTML stripping, length limits)
 - Helmet security headers with strict CSP (Google Fonts whitelisted)
-- Pino structured logging with daily rotation and redact paths
+- Pino structured logging to stdout (Vercel-compatible; no pivoted log files)
+- Idempotent Postgres schema migrations (auto-run on server boot and in the Vercel function)
 
 **Frontend**
 - React 19 with Vite 8
@@ -51,8 +52,19 @@ npm install
 
 # Configure environment
 cp server/.env.example server/.env
-# Edit server/.env — set a strong JWT_SECRET
+# Edit server/.env — set a strong JWT_SECRET and a Postgres DATABASE_URL
 ```
+
+### Postgres Setup
+
+Storage is Postgres (Vercel Neon in production, any local Postgres for development). The idempotent
+schema is applied automatically on server boot and inside the Vercel function, so just start the server:
+
+```bash
+cd server && npm install && npm run dev   # dev — auto-migrates and seeds demo user
+```
+
+Create a database matching your `DATABASE_URL` first (e.g. `createdb vault`).
 
 ### Development
 
@@ -70,6 +82,15 @@ The Vite dev server proxies `/api/*` to the backend on port 4000.
 
 Open [http://localhost:5173](http://localhost:5173).
 
+### Demo Credentials
+
+```
+Email:    demo@vault.dev
+Password: VaultXy7!kqmn92
+```
+
+The demo account is seeded in development only (never in production). Email is pre-verified.
+
 ### Production Build
 
 ```bash
@@ -77,18 +98,29 @@ npm run build           # Build frontend into dist/
 npm run start --prefix server  # Start backend (also serves frontend static files)
 ```
 
-### Deploy to Render
+### Deploy to Vercel
 
-A `render.yaml` is included for one-click deployment:
+The Express API runs as a serverless function (`api/index.js`) and Vercel serves the static frontend.
 
-1. Push to GitHub
-2. In Render dashboard → **New Web Service** → connect repo
-3. Set environment variables:
+1. Push to GitHub and import the repo in Vercel.
+2. Provision Postgres (Vercel dashboard → **Storage** → create a **Neon** database).
+3. Add these environment variables (Production + Preview/Development):
+   - `DATABASE_URL` — Neon Postgres connection string
    - `JWT_SECRET` — long random string
-   - `CORS_ORIGIN` — your Render URL
+   - `CORS_ORIGIN` — your Vercel app URL (e.g. `https://your-app.vercel.app`)
    - `NODE_ENV` = `production`
+   - `PUBLIC_ORIGIN` — base URL used to build email-verification / reset links
+     (e.g. `https://your-app.vercel.app`; defaults handled in dev)
+4. Deploy (`vercel` or git push). The function auto-migrates the schema on first boot.
+5. Verify: `https://your-app.vercel.app/api/health`.
 
-The server auto-seeds the demo user on every cold start, so credentials are always available even after spin-down.
+The demo user seeds only in development; production never seeds a known-credential account.
+
+Caveats:
+- Rate limiters use per-function-instance in-memory stores, so global/per-endpoint limits are weaker
+  under serverless concurrency.
+- bcrypt is a native module; the prebuilt binaries target common Vercel platforms and are expected
+  to work, but this is untested in production.
 
 ## Architecture
 
@@ -102,15 +134,18 @@ secure-login-system/
 │   ├── src/
 │   │   ├── config/         # Environment + JWT secret auto-generation
 │   │   ├── controllers/    # Route handlers
+│   │   ├── db/             # Postgres pool + schema.sql (auto-migrated)
 │   │   ├── middleware/      # Auth, CSRF, validation, error, requestContext
 │   │   ├── routes/         # API route definitions with per-endpoint rate limiters
 │   │   ├── services/       # Business logic (auth, tokens, audit)
-│   │   ├── utils/          # Logger, AppError, fileStore, randomToken
+│   │   ├── utils/          # Logger, AppError, randomToken
 │   │   ├── app.js          # Express app setup
 │   │   ├── index.js        # Entry point (calls seed on startup)
-│   │   └── seed.js         # Demo user auto-seeder
-│   └── data/               # JSON file storage (gitignored, ephemeral on Render)
-├── render.yaml             # Render deployment config
+│   │   └── seed.js         # Demo user auto-seeder (dev only)
+│   └── .env                # DATABASE_URL + JWT_SECRET (gitignored)
+├── api/
+│   └── index.js            # Vercel serverless function wrapper (auto-migrates)
+├── vercel.json             # Vercel routing (API + SPA fallback)
 ├── package.json
 └── README.md
 ```
@@ -121,14 +156,14 @@ secure-login-system/
 |--------|------|------|------------|-------------|
 | GET | `/api/auth/csrf-token` | — | — | Get CSRF token |
 | GET | `/api/auth/password-policy` | — | — | Get password policy |
-| POST | `/api/auth/register` | — | — | Create account |
+| POST | `/api/auth/register` | — | 10/15min | Create account (requires email verification) |
 | POST | `/api/auth/login` | — | 20/15min | Sign in |
 | POST | `/api/auth/logout` | Required | — | Sign out (deletes current session only) |
 | POST | `/api/auth/refresh` | — | — | Rotate tokens (+ double-rotation detection) |
 | GET | `/api/auth/me` | Required | — | Current user profile |
 | GET | `/api/auth/verify-email` | — | 10/60min | Verify email |
-| POST | `/api/auth/forgot-password` | — | 3/15min per email | Request password reset |
-| POST | `/api/auth/reset-password` | — | 5/15min per token | Reset password |
+| POST | `/api/auth/forgot-password` | — | 3/15min per IP | Request password reset |
+| POST | `/api/auth/reset-password` | — | 5/15min per IP | Reset password |
 | POST | `/api/auth/mfa/generate` | Required | 5/15min | Generate TOTP secret |
 | POST | `/api/auth/mfa/enable` | Required | 10/15min | Enable MFA |
 | POST | `/api/auth/mfa/disable` | Required | 10/15min | Disable MFA |
@@ -146,23 +181,25 @@ secure-login-system/
 - [x] Refresh token double-rotation prevention
 - [x] Secure HttpOnly cookies (SameSite=Strict, path scoped)
 - [x] MFA (TOTP) + hashed backup recovery codes
+- [x] MFA disable requires valid TOTP re-authentication
 - [x] Generic error messages (no user enumeration)
-- [x] Timing-safe login (artificial delay on unknown email)
+- [x] Timing-safe login (dummy bcrypt comparison on unknown email)
 
 ### Rate Limiting & Lockout
 - [x] Global API rate limit (200/15min)
-- [x] Per-endpoint rate limiters (login, forgot-password, reset, MFA, verify-email)
+- [x] Per-endpoint rate limiters (login, register, forgot-password, reset, MFA, verify-email)
 - [x] Account lockout with exponential backoff
 - [x] IP + email-level failed attempt tracking
 - [x] Multi-IP attack detection + security alert
-- [x] Forgot-password rate limited per email address
-- [x] Reset-password rate limited per token
+- [x] Forgot-password rate limited per IP
+- [x] Reset-password rate limited per IP
 
 ### Session Management
-- [x] IP and user-agent binding in JWT
+- [x] IP and user-agent binding in JWT (enforced on every request)
 - [x] Session idle timeout (30min) + absolute lifetime (24h)
 - [x] Session ownership validation on every request
 - [x] Session cleanup on token rotation
+- [x] Refresh token reuse detected → revoke all tokens and sessions
 - [x] Session deletion ownership check
 - [x] Logout deletes only current session
 - [x] Remote logout all devices
@@ -187,15 +224,13 @@ secure-login-system/
 - [x] Password expiry (90 days)
 
 ### Logging & Monitoring
-- [x] Structured audit log (10k entry cap)
-- [x] Pino structured logging with daily rotation
-- [x] Redact sensitive fields (passwords, tokens, cookies, codes)
+- [x] Structured audit log (Postgres `audit_events` table)
+- [x] Pino structured logging to stdout (redact sensitive fields)
 - [x] Security alert events (account locked, MFA changes, multi-IP attacks)
 - [x] Graceful error classification (operational vs internal)
 
 ### Code Quality
-- [x] Atomic file writes (tmp + rename, no TOCTOU race)
-- [x] Write-through in-memory cache (avoids re-parsing JSON)
+- [x] Postgres storage (pooled queries, transactions, idempotent schema migration)
 - [x] Shared `randomToken` utility (replaces 6 inline `crypto.randomBytes` calls)
 - [x] Request context middleware (centralizes IP/UA extraction)
 - [x] Named constants (replaces magic strings/numbers)
@@ -206,7 +241,7 @@ secure-login-system/
 ### Remaining (outside scope)
 - [ ] CAPTCHA / bot protection
 - [ ] Security monitoring / alerting dashboard
-- [ ] Database migration (SQLite/Postgres for persistent storage on Render)
+- [ ] Persistent rate-limit store (Vercel serverless instances share no memory)
 
 ## License
 

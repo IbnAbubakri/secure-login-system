@@ -30,3 +30,5 @@ plan.txt
 server/.env
 server/data/*.json
 server/logs/
+server/src/seed.js
+.pgdata/

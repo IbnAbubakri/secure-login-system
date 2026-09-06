@@ -13,18 +13,25 @@ config({ path: resolve(__dirname, '../../.env') });
 const env = {
   PORT: parseInt(process.env.PORT, 10) || 4000,
   NODE_ENV: process.env.NODE_ENV || 'development',
+  DATABASE_URL: process.env.DATABASE_URL,
   JWT_SECRET: process.env.JWT_SECRET,
   JWT_ACCESS_EXPIRES_IN: process.env.JWT_ACCESS_EXPIRES_IN || '15m',
   JWT_REFRESH_EXPIRES_IN: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   CORS_ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  isVer: () => process.env.VERCEL === '1',
   isDev: () => env.NODE_ENV === 'development',
   isProd: () => env.NODE_ENV === 'production',
+  isStandalone: () => env.NODE_ENV === 'production' && process.env.VERCEL !== '1',
 };
 
 const DEFAULT_SECRET = 'change-this-to-a-long-random-string-in-production';
 if (!env.JWT_SECRET || env.JWT_SECRET === DEFAULT_SECRET) {
   env.JWT_SECRET = randomToken(32);
   console.warn('WARNING: JWT_SECRET is weak or default. Auto-generated a random secret for this session.');
+}
+
+if (!env.DATABASE_URL) {
+  throw new Error('DATABASE_URL is required. Add a Postgres connection string to server/.env.');
 }
 
 export default env;
