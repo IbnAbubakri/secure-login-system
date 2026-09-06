@@ -58,25 +58,6 @@ export default function LoginPage() {
     if (mfaStep && totpRef.current) totpRef.current.focus()
   }, [mfaStep])
 
-  const handleSubmit = useCallback(async (e) => {
-    e.preventDefault()
-    setAlert(null)
-
-    if (mfaStep) {
-      if (!totpCode.trim()) {
-        setAlert({ type: 'error', message: 'Enter your two-factor code.' })
-        return
-      }
-      return submitLogin({ email: mfaEmail, password, totpCode: totpCode.trim() })
-    }
-
-    emailTouched.current = true
-    passwordTouched.current = true
-    if (!isFormValid) return
-
-    submitLogin({ email: email.trim(), password })
-  }, [email, password, isFormValid, mfaStep, mfaEmail, totpCode, submitLogin])
-
   const submitLogin = useCallback(async (body) => {
     setLoading(true)
     const controller = new AbortController()
@@ -135,6 +116,25 @@ export default function LoginPage() {
       }
     }
   }, [csrfToken, remember, email])
+
+  const handleSubmit = useCallback(async (e) => {
+    e.preventDefault()
+    setAlert(null)
+
+    if (mfaStep) {
+      if (!totpCode.trim()) {
+        setAlert({ type: 'error', message: 'Enter your two-factor code.' })
+        return
+      }
+      return submitLogin({ email: mfaEmail, password, totpCode: totpCode.trim() })
+    }
+
+    emailTouched.current = true
+    passwordTouched.current = true
+    if (!isFormValid) return
+
+    submitLogin({ email: email.trim(), password })
+  }, [email, password, isFormValid, mfaStep, mfaEmail, totpCode, submitLogin])
 
   function handleCancelMfa() {
     setMfaStep(false)
