@@ -9,6 +9,7 @@ import logger from '../utils/logger.js';
 import { logAction, securityAlert } from './audit.service.js';
 import { query } from '../db/index.js';
 import randomToken from '../utils/randomToken.js';
+import { sendEmail } from './email.service.js';
 
 const SALT_ROUNDS = 12;
 const MAX_ATTEMPTS = 5;
@@ -245,7 +246,7 @@ export async function register({ email, password, ip, userAgent }) {
   const user = { id, email: email.toLowerCase(), role: 'user' };
   logAction({ userId: id, action: 'REGISTER', details: { email: user.email }, ip, userAgent });
   logger.info({ userId: id }, 'User registered');
-  stubEmail(user.email, 'Verify your Vault account', `Verify: ${appVerificationUrl(verificationToken)}`);
+  await sendEmailSafe(user.email, 'Verify your Vault account', `Verify: ${appVerificationUrl(verificationToken)}`);
   return {
     id,
     email: user.email,
@@ -257,6 +258,11 @@ export async function register({ email, password, ip, userAgent }) {
 function appVerificationUrl(token) {
   const origin = process.env.PUBLIC_ORIGIN || `http://localhost:${process.env.PORT || 4000}`;
   return `${origin}/api/auth/verify-email?token=${encodeURIComponent(token)}`;
+}
+
+function appPasswordResetUrl(token) {
+  const origin = process.env.PUBLIC_ORIGIN || `http://localhost:${process.env.PORT || 4000}`;
+  return `${origin}/reset-password?token=${encodeURIComponent(token)}`;
 }
 
 const DUMMY_HASH = '$2b$12$jKMF9kIud3EFjOtXpQ9pu.urQALrBGxNGf7majjophjGStsfGZ41m';
@@ -338,7 +344,7 @@ export async function forgotPassword(email, ip, userAgent) {
   const resetExpires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
   await query('UPDATE users SET reset_token = $1, reset_token_expires = $2 WHERE id = $3', [resetToken, resetExpires, user.id]);
   logAction({ userId: user.id, action: 'PASSWORD_RESET_REQUESTED', details: { email: user.email }, ip, userAgent, severity: 'high' });
-  stubEmail(email, 'Password Reset', `Reset: /reset-password?token=${resetToken}`);
+  await sendEmailSafe(email, 'Password Reset', `Reset: ${appPasswordResetUrl(resetToken)}`);
   logger.info({ userId: user.id }, 'Password reset requested');
   return { message: 'If that email exists, a reset link has been sent.' };
 }
@@ -467,10 +473,10 @@ export async function regenerateBackupCodes(userId, ip, userAgent) {
   return { backupCodes: codes };
 }
 
-function stubEmail(to, subject, body) {
-  if (process.env.NODE_ENV === 'production') {
-    logger.info({ emailTo: to, subject }, '[EMAIL STUB] Email delivery not configured for production.');
-    return;
+async function sendEmailSafe(to, subject, body) {
+  try {
+    await sendEmail(to, subject, body);
+  } catch (err) {
+    logger.error({ err: err.message, emailTo: to, subject }, 'Email delivery failed');
   }
-  logger.info({ emailTo: to, subject }, `[EMAIL STUB] ${body}`);
 }
