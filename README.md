@@ -2,14 +2,6 @@
 
 A production-grade authentication system built with React, Node.js, and Express. Hardened against 46 security and code-quality issues across 3 audit rounds.
 
-## Demo Credentials
-
-```
-Demo:  demo@vault.dev / VaultXy7!kqmn92
-```
-
-The demo account is auto-seeded on startup when no users exist. Email is pre-verified.
-
 ## Features
 
 **Security**
@@ -61,7 +53,7 @@ Storage is Postgres (Vercel Neon in production, any local Postgres for developme
 schema is applied automatically on server boot and inside the Vercel function, so just start the server:
 
 ```bash
-cd server && npm install && npm run dev   # dev — auto-migrates and seeds demo user
+cd server && npm install && npm run dev   # dev — auto-migrates; create your own account on register
 ```
 
 Create a database matching your `DATABASE_URL` first (e.g. `createdb vault`).
@@ -81,15 +73,6 @@ npm run dev
 The Vite dev server proxies `/api/*` to the backend on port 4000.
 
 Open [http://localhost:5173](http://localhost:5173).
-
-### Demo Credentials
-
-```
-Email:    demo@vault.dev
-Password: VaultXy7!kqmn92
-```
-
-The demo account is seeded in development only (never in production). Email is pre-verified.
 
 ### Production Build
 
@@ -114,7 +97,7 @@ The Express API runs as a serverless function (`api/index.js`) and Vercel serves
 4. Deploy (`vercel` or git push). The function auto-migrates the schema on first boot.
 5. Verify: `https://your-app.vercel.app/api/health`.
 
-The demo user seeds only in development; production never seeds a known-credential account.
+No accounts are ever seeded — create your own via the register flow.
 
 Caveats:
 - Rate limiters use per-function-instance in-memory stores, so global/per-endpoint limits are weaker
@@ -140,8 +123,8 @@ secure-login-system/
 │   │   ├── services/       # Business logic (auth, tokens, audit)
 │   │   ├── utils/          # Logger, AppError, randomToken
 │   │   ├── app.js          # Express app setup
-│   │   ├── index.js        # Entry point (calls seed on startup)
-│   │   └── seed.js         # Demo user auto-seeder (dev only)
+│   │   ├── index.js        # Entry point
+│   │   └── app.js          # Express app setup
 │   └── .env                # DATABASE_URL + JWT_SECRET (gitignored)
 ├── api/
 │   └── index.js            # Vercel serverless function wrapper (auto-migrates)

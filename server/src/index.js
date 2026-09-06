@@ -9,12 +9,6 @@ import { migrate } from './db/index.js';
 app.listen(env.PORT, async () => {
   try {
     await migrate();
-    try {
-      const { default: seed } = await import('./seed.js');
-      await seed();
-    } catch (err) {
-      if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
-    }
     logger.info(`Server running on http://localhost:${env.PORT} [${env.NODE_ENV}]`);
   } catch (err) {
     logger.error({ err: err.message }, 'Startup failed');
